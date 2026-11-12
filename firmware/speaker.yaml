@@ -1,0 +1,55 @@
+# Your Voice PE: a thin client for bridge.py (no Home Assistant).
+#
+# Firmware: voice-pe-realtime.yaml, a vendored, pinned copy of
+# xandervanerven/home-assistant-voice-pe (MIT), the va_client thin client,
+# patched to run without Home Assistant (see its header). Wake word: "Okay Nabu".
+# Secrets: secrets.yaml in this folder (gitignored; template secrets.yaml.example).
+# Flash with ../flash.sh only: it asks the bridge for this speaker's address and
+# secret token. A plain `esphome run` has no token and would flash a device
+# that can't connect.
+#   first time, USB-C to the computer:  ./flash.sh
+#   later, over Wi-Fi:                  ./flash.sh ota
+substitutions:
+  name: voice-dot
+  friendly_name: Voice Dot
+  wifi_ssid: !secret wifi_ssid
+  wifi_password: !secret wifi_password
+  ota_password: !secret ota_password
+  api_key: !secret api_key
+  # The computer running bridge.py, by .local name (never by IP address: home
+  # routers move addresses and the speaker goes offline). flash.sh fills this in.
+  va_url: ${bridge_url}
+
+packages:
+  realtime: !include voice-pe-realtime.yaml
+
+# The upstream firmware starts the wake word when Home Assistant connects
+# (api.on_client_connected), which never happens here. Start it the first
+# time the bridge's WebSocket is up instead; after that the firmware re-arms
+# it on every return to idle.
+globals:
+  - id: wake_word_started
+    type: bool
+    initial_value: "false"
+
+interval:
+  - interval: 5s
+    then:
+      - if:
+          condition:
+            lambda: "return !id(wake_word_started) && id(va)->is_connected();"
+          then:
+            - lambda: "id(wake_word_started) = true;"
+            - micro_wake_word.start:
+            - micro_wake_word.disable_model: stop
+            - script.execute: control_leds
+
+# Optional, as in the video: a red-only LED ring (easier on the eyes at night).
+# Zeroing green and blue makes every effect render as its red component.
+# light:
+#   - id: !extend leds_internal
+#     color_correct: [100%, 0%, 0%]
+#   - id: !extend voice_assistant_leds
+#     color_correct: [100%, 0%, 0%]
+#   - id: !extend led_ring
+#     color_correct: [100%, 0%, 0%]

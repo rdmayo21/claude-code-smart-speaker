@@ -1,0 +1,6 @@
+/firmware/.esphome/
+/firmware/secrets.yaml
+__pycache__/
+.pytest_cache/
+.venv/
+*.log
