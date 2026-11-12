@@ -1,7 +1,8 @@
 # Vendored from github.com/xandervanerven/home-assistant-voice-pe
 # home-assistant-voice.realtime.yaml @ 763a87a85fe2f86b6aa819e6b4cbc6bd6943f796 (MIT, LICENSE-home-assistant-voice-pe),
 # for the Claude Code speaker bridge (../bridge.py) with no Home Assistant.
-# Every remote reference is pinned (the original followed moving branches), and
+# Every git reference is pinned (the original followed moving branches; the small
+# VAD model files still come from upstream's main), and
 # each change is marked "PATCH (voice dot)". Upstream diff:
 #   diff <(curl -sL https://raw.githubusercontent.com/xandervanerven/home-assistant-voice-pe/763a87a85fe2f86b6aa819e6b4cbc6bd6943f796/home-assistant-voice.realtime.yaml) voice-pe-realtime.yaml
 # ============================================================================

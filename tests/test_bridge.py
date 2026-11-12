@@ -93,9 +93,11 @@ def test_claude_command_is_read_only_by_default_and_continues_when_asked() -> No
     cfg = dict(bridge.DEFAULT_CONFIG)
     command = bridge.claude_command(cfg, "hi", resume=True)
     assert command[:5] == ["claude", "-p", "hi", "--output-format", "text"]
-    assert "-c" in command and "Read,Glob,Grep,WebSearch,WebFetch" in command
-    assert "-c" not in bridge.claude_command(cfg, "hi", resume=False)
-    assert "Bash" not in " ".join(command)
+    assert "-c" in command and "-c" not in bridge.claude_command(cfg, "hi", resume=False)
+    # no Bash or Write exists, personal settings are ignored, and nothing unlisted is asked for
+    assert command[command.index("--tools") + 1] == "Read,Glob,Grep,WebSearch,WebFetch"
+    assert command[command.index("--setting-sources") + 1] == "project,local"
+    assert command[command.index("--permission-mode") + 1] == "dontAsk"
 
 
 def test_agent_command_swaps_in_another_agent_and_never_continues() -> None:
@@ -118,6 +120,26 @@ def test_claude_prompt_names_the_room_and_forbids_acting_on_a_spoken_request() -
     prompt = bridge.claude_prompt("bedroom", "turn off the light")
     assert "bedroom" in prompt and "irreversible" in prompt
     assert prompt.endswith("turn off the light")
+
+
+def test_claude_prompt_carries_the_time_because_the_agent_has_no_clock() -> None:
+    assert "(Local time now: Monday 9:53 PM.)" in bridge.claude_prompt(
+        "den", "time?", "Monday 9:53 PM"
+    )
+
+
+def test_make_secrets_is_private_and_keeps_device_secrets_on_a_second_run(tmp_path: Path) -> None:
+    line = bridge.make_secrets(tmp_path, "Home 2.4")
+    path = tmp_path / "secrets.yaml"
+    first = path.read_text()
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert 'wifi_ssid: "Home 2.4"' in first and "__ASK_AT_FLASH__" in first
+    assert first.split("ota_password: ")[1].split("\n")[0] not in line  # nothing secret printed
+    path.write_text(first.replace('"__ASK_AT_FLASH__"', '"typed-wrong"'))
+    bridge.make_secrets(tmp_path, "Other")
+    second = path.read_text()
+    assert 'wifi_ssid: "Other"' in second and "typed-wrong" not in second
+    assert second.split("ota_password: ")[1] == first.split("ota_password: ")[1]
 
 
 def test_ask_claude_retries_without_continue_when_there_is_nothing_to_continue(

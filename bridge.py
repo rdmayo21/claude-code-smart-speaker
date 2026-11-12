@@ -46,6 +46,7 @@ voice in the room can make Claude Code do.
 Run:  uv run bridge.py                       (serves 0.0.0.0:7697)
       uv run bridge.py --print-url bedroom   (the va_url to flash into a device)
       uv run bridge.py --check               (what is installed, configured and running)
+      uv run bridge.py --make-secrets NAME   (firmware/secrets.yaml for your Wi-Fi, nothing shown)
 """
 
 from __future__ import annotations
@@ -95,6 +96,10 @@ ASK_DEADLINE_S = 240
 
 ROOM_RE = re.compile(r"^[a-z][a-z0-9-]{0,23}$")
 
+READ_ONLY_TOOLS = "Read,Glob,Grep,WebSearch,WebFetch"
+# Set by a coding agent in its own shell; a bridge started from one must not pass them on.
+SESSION_ENV = ("CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_ENTRYPOINT")
+
 DEFAULT_CONFIG: dict[str, object] = {
     "token": "",
     # Mic stays open this long after each reply so you can answer without the
@@ -113,10 +118,23 @@ DEFAULT_CONFIG: dict[str, object] = {
     "voice": "marin",
     # Where `claude -p` runs. Put a CLAUDE.md, scripts and .mcp.json there.
     "claude_workdir": "~/voice-dot",
-    # Extra arguments for every `claude -p`. The default lets Claude Code read
-    # and search the web but change nothing. Widen it on purpose, e.g. add
-    # "Bash(./lights.sh:*)" to --allowedTools for a script the speaker may run.
-    "claude_args": ["--allowedTools", "Read,Glob,Grep,WebSearch,WebFetch"],
+    # Extra arguments for every `claude -p`: what a voice in the room can make
+    # Claude Code do. The default can read files and search the web and nothing
+    # else: --tools removes every other built-in tool (no Bash, no Write),
+    # --setting-sources ignores your personal Claude Code settings (which may
+    # allow everything), and dontAsk refuses whatever is not listed. To let it
+    # run one script, add Bash to --tools and "Bash(./lights.sh:*)" to
+    # --allowedTools. Reading is not confined to the folder.
+    "claude_args": [
+        "--setting-sources",
+        "project,local",
+        "--permission-mode",
+        "dontAsk",
+        "--tools",
+        READ_ONLY_TOOLS,
+        "--allowedTools",
+        READ_ONLY_TOOLS,
+    ],
     # true: each ask continues the folder's last conversation, so the speaker
     # remembers earlier requests. false: every ask starts fresh.
     "claude_continue": True,
@@ -315,9 +333,11 @@ def session_update(room: str, voice: str, vad_eagerness: str) -> dict[str, objec
     }
 
 
-def claude_prompt(room: str, request: str) -> str:
-    """The prompt Claude Code receives for one ask from a room."""
-    return f"{CLAUDE_ROOM_NOTE.format(room=room_label(room))}\n\n{request or '(empty request)'}"
+def claude_prompt(room: str, request: str, now: str = "") -> str:
+    """The prompt the agent receives for one ask from a room."""
+    note = CLAUDE_ROOM_NOTE.format(room=room_label(room))
+    clock = f"\n(Local time now: {now}.)" if now else ""
+    return f"{note}{clock}\n\n{request or '(empty request)'}"
 
 
 def claude_command(cfg: dict[str, object], prompt: str, resume: bool) -> list[str]:
@@ -341,7 +361,7 @@ def check_lines(cfg: dict[str, object], port: int) -> list[tuple[bool, str]]:
         (shutil.which(agent) is not None, f"agent command `{agent}` is installed"),
         (read_key() is not None, f"OpenAI API key (OPENAI_API_KEY or {KEY_FILE})"),
         (shutil.which("uvx") is not None, "uvx is installed (flash.sh uses it to run ESPHome)"),
-        (workdir.is_dir(), f"agent folder {workdir} exists (created on the first ask if not)"),
+        (workdir.is_dir(), f"agent folder {workdir} exists (the bridge creates it when it starts)"),
         (running, f"bridge is running on port {port}"),
     ]
 
@@ -377,6 +397,34 @@ def load_config(path: Path = CONFIG_FILE) -> dict[str, object]:
     return cfg
 
 
+def make_secrets(firmware: Path, wifi_name: str) -> str:
+    """Write firmware/secrets.yaml (mode 600) with fresh device secrets; returns a status line.
+
+    The Wi-Fi password is left as the marker flash.sh asks for. An existing file keeps its
+    device secrets (the OTA password is needed for later over-the-air flashes) and only
+    gets the new network name and the marker back.
+    """
+    path = firmware / "secrets.yaml"
+    old: dict[str, str] = {}
+    if path.exists():
+        for line in path.read_text().splitlines():
+            key, _, value = line.partition(":")
+            if value.strip() and not key.startswith("#"):
+                old[key.strip()] = value.strip()
+    values = {
+        "wifi_ssid": json.dumps(wifi_name),
+        "wifi_password": '"__ASK_AT_FLASH__"',
+        "ota_password": old.get("ota_password") or json.dumps(secrets.token_urlsafe(24)),
+        "api_key": old.get("api_key") or json.dumps(base64.b64encode(os.urandom(32)).decode()),
+    }
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as handle:
+        handle.write("".join(f"{key}: {value}\n" for key, value in values.items()))
+    os.chmod(path, 0o600)
+    kept = "kept the device secrets" if "ota_password" in old else "made new device secrets"
+    return f"wrote {path} for Wi-Fi {wifi_name!r} ({kept}; flash.sh will ask for the password)"
+
+
 def lan_name() -> str:
     """This computer's .local name, which survives the router changing its address."""
     if shutil.which("scutil"):  # macOS: the Bonjour name, not the computer name
@@ -395,9 +443,11 @@ def lan_name() -> str:
 
 
 async def _run_claude(command: list[str], workdir: Path) -> tuple[int, str, str]:
+    env = {k: v for k, v in os.environ.items() if k not in SESSION_ENV}
     process = await asyncio.create_subprocess_exec(
         *command,
         cwd=workdir,
+        env=env,
         stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -428,7 +478,7 @@ async def ask_claude(cfg: dict[str, object], room: str, request: str) -> str:
     """
     workdir = Path(str(cfg["claude_workdir"])).expanduser()
     workdir.mkdir(parents=True, exist_ok=True)
-    prompt = claude_prompt(room, request)
+    prompt = claude_prompt(room, request, time.strftime("%A %B %d %Y, %I:%M %p"))
     attempts = (
         [True, False] if cfg.get("claude_continue") and not cfg.get("agent_command") else [False]
     )
@@ -871,12 +921,20 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--print-url", metavar="ROOM", help="print a speaker's va_url and exit")
     parser.add_argument("--check", action="store_true", help="report what is ready and exit")
+    parser.add_argument(
+        "--make-secrets",
+        metavar="WIFI_NAME",
+        help="write firmware/secrets.yaml for this Wi-Fi network without showing any secret",
+    )
     args = parser.parse_args()
     if args.check:
         lines = check_lines(load_config(), args.port)
         for ok, text in lines:
             print(("ok       " if ok else "MISSING  ") + text)
-        raise SystemExit(0 if all(ok for ok, _ in lines[:3]) else 1)
+        raise SystemExit(0 if all(ok for ok, _ in lines) else 1)
+    if args.make_secrets is not None:
+        print(make_secrets(Path(__file__).resolve().parent / "firmware", args.make_secrets))
+        return
     if args.print_url:
         if not ROOM_RE.match(args.print_url):
             raise SystemExit("room: lowercase letters, digits and dashes (e.g. bedroom)")

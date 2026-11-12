@@ -2,5 +2,7 @@
 /firmware/secrets.yaml
 __pycache__/
 .pytest_cache/
+.ruff_cache/
 .venv/
+uv.lock
 *.log
