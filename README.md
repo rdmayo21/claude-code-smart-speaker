@@ -25,17 +25,27 @@ do by voice.
 - [`uv`](https://docs.astral.sh/uv/). It runs the bridge and ESPHome with nothing else to install.
 - A 2.4 GHz Wi-Fi network (the speaker cannot join 5 GHz-only networks).
 
-## Set it up
+## Set it up: hand it to your agent
 
-The quick way: open Claude Code in this folder and paste the prompt in [SETUP.md](SETUP.md).
+Paste this into your AI coding agent (Claude Code, Codex, Gemini CLI, Cursor, any of them):
 
-By hand:
+```
+Clone https://github.com/rdmayo21/claude-code-smart-speaker and follow its AGENTS.md to set up the smart speaker for me.
+```
+
+It does everything it can and stops only for what needs you: your OpenAI key, your Wi-Fi name and
+password, plugging the speaker in, and saying the first words. [AGENTS.md](AGENTS.md) is the full
+runbook, with a check after every step.
+
+<details><summary>By hand instead</summary>
 
 1. **Key.** `mkdir -p ~/.config/voice-dot && printf '%s\n' 'sk-...' > ~/.config/voice-dot/openai-api-key && chmod 600 ~/.config/voice-dot/openai-api-key`
-2. **Bridge.** `uv run bridge.py` and leave it running. First run creates `~/.config/voice-dot/config.json` with a secret token.
+2. **Bridge.** `uv run bridge.py` and leave it running. `uv run bridge.py --check` shows what is ready.
 3. **Secrets.** `cp firmware/secrets.yaml.example firmware/secrets.yaml`, then set your Wi-Fi name, an OTA password and an API key (the file says how).
-4. **Flash.** Plug the speaker into the computer with USB-C and run `./flash.sh`. It asks for the Wi-Fi password, compiles (several minutes the first time) and flashes. Later updates go over Wi-Fi: `./flash.sh ota`.
-5. **Talk.** When the ring settles, say **"Okay Nabu, what time is it?"** The bridge log shows `heard:` and `said:` lines. Say **"stop"** to cut a reply.
+4. **Flash.** Plug the speaker in with USB-C and run `./flash.sh`. Later updates: `./flash.sh ota`.
+5. **Talk.** Say **"Okay Nabu, what time is it?"** Say **"stop"** to cut a reply.
+
+</details>
 
 ## Teach it things
 
@@ -63,6 +73,7 @@ the allowed-tools list is the real limit.
 | `claude_workdir` | `~/voice-dot` | Folder Claude Code runs in |
 | `claude_args` | read-only tools | Extra arguments for every `claude -p` |
 | `claude_continue` | `true` | Remember earlier requests (continues the folder's last conversation) |
+| `agent_command` | empty | Use another agent instead of Claude Code, e.g. `["codex", "exec", "{prompt}"]` (untested) |
 | `voice` / `model` | `marin` / `gpt-realtime` | The OpenAI voice and realtime model |
 | `mic_gain` | `4` | Boost on the mic stream; lower it if speech sounds clipped |
 | `follow_up_ms` | `6000` | How long the mic stays open after a reply; `0` for one turn per wake |
@@ -81,7 +92,7 @@ wakes but never answers, check the bridge log first: `insufficient_quota` means 
 - The bridge is a trimmed copy of the one that has run the author's bedroom speaker since October 2026.
   Removed: his Cast-speaker playback, premade home commands and private agent hub. Changed: the
   one tool now runs `claude -p`.
-- Tested in this form: the 25 unit tests; real asks through `claude -p` (including follow-ups);
+- Tested in this form: the unit tests; real asks through `claude -p` (including follow-ups);
   the server with a stand-in device (handshake, token check, error path); the firmware config
   validates with ESPHome 2026.10.1.
 - **Not** tested in this form: a full spoken round trip on a real speaker, and flashing from

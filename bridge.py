@@ -45,6 +45,7 @@ voice in the room can make Claude Code do.
 
 Run:  uv run bridge.py                       (serves 0.0.0.0:7697)
       uv run bridge.py --print-url bedroom   (the va_url to flash into a device)
+      uv run bridge.py --check               (what is installed, configured and running)
 """
 
 from __future__ import annotations
@@ -119,6 +120,10 @@ DEFAULT_CONFIG: dict[str, object] = {
     # true: each ask continues the folder's last conversation, so the speaker
     # remembers earlier requests. false: every ask starts fresh.
     "claude_continue": True,
+    # Another agent instead of Claude Code: a full command with "{prompt}" where
+    # the request goes, e.g. ["codex", "exec", "{prompt}"]. It must print its
+    # answer and exit. When set, claude_args and claude_continue are ignored.
+    "agent_command": [],
 }
 HELLO_KEYS = (
     "follow_up_ms",
@@ -316,17 +321,28 @@ def claude_prompt(room: str, request: str) -> str:
 
 
 def claude_command(cfg: dict[str, object], prompt: str, resume: bool) -> list[str]:
-    """The `claude -p` command line for one ask."""
+    """The command line for one ask: `claude -p`, or agent_command when set."""
+    custom = cfg.get("agent_command")
+    if isinstance(custom, list) and custom:
+        return [str(part).replace("{prompt}", prompt) for part in custom]
     extra = cfg.get("claude_args")
     args = [str(a) for a in extra] if isinstance(extra, list) else []
+    return ["claude", "-p", prompt, "--output-format", "text", *(["-c"] if resume else []), *args]
+
+
+def check_lines(cfg: dict[str, object], port: int) -> list[tuple[bool, str]]:
+    """What `--check` reports: each thing the speaker needs, and whether it is there."""
+    custom = cfg.get("agent_command")
+    agent = str(custom[0]) if isinstance(custom, list) and custom else "claude"
+    workdir = Path(str(cfg["claude_workdir"])).expanduser()
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        running = probe.connect_ex(("127.0.0.1", port)) == 0
     return [
-        "claude",
-        "-p",
-        prompt,
-        "--output-format",
-        "text",
-        *(["-c"] if resume else []),
-        *args,
+        (shutil.which(agent) is not None, f"agent command `{agent}` is installed"),
+        (read_key() is not None, f"OpenAI API key (OPENAI_API_KEY or {KEY_FILE})"),
+        (shutil.which("uvx") is not None, "uvx is installed (flash.sh uses it to run ESPHome)"),
+        (workdir.is_dir(), f"agent folder {workdir} exists (created on the first ask if not)"),
+        (running, f"bridge is running on port {port}"),
     ]
 
 
@@ -413,7 +429,9 @@ async def ask_claude(cfg: dict[str, object], room: str, request: str) -> str:
     workdir = Path(str(cfg["claude_workdir"])).expanduser()
     workdir.mkdir(parents=True, exist_ok=True)
     prompt = claude_prompt(room, request)
-    attempts = [True, False] if cfg.get("claude_continue") else [False]
+    attempts = (
+        [True, False] if cfg.get("claude_continue") and not cfg.get("agent_command") else [False]
+    )
     detail = ""
     for resume in attempts:
         try:
@@ -421,7 +439,7 @@ async def ask_claude(cfg: dict[str, object], room: str, request: str) -> str:
         except TimeoutError:
             return STILL_WORKING
         except FileNotFoundError:
-            return "ask_claude failed: the claude command is not installed on this computer"
+            return "ask_claude failed: the agent command is not installed on this computer"
         if code == 0 and out.strip():
             return out.strip()
         # The first ask in a new folder has no conversation to continue: go again without -c.
@@ -827,6 +845,7 @@ class Bridge:
 async def serve_forever(host: str, port: int) -> None:
     """Serve room speakers until killed."""
     cfg = load_config()
+    Path(str(cfg["claude_workdir"])).expanduser().mkdir(parents=True, exist_ok=True)
     bridge = Bridge(cfg)
     async with serve(
         bridge.handle,
@@ -851,7 +870,13 @@ def main() -> None:
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--print-url", metavar="ROOM", help="print a speaker's va_url and exit")
+    parser.add_argument("--check", action="store_true", help="report what is ready and exit")
     args = parser.parse_args()
+    if args.check:
+        lines = check_lines(load_config(), args.port)
+        for ok, text in lines:
+            print(("ok       " if ok else "MISSING  ") + text)
+        raise SystemExit(0 if all(ok for ok, _ in lines[:3]) else 1)
     if args.print_url:
         if not ROOM_RE.match(args.print_url):
             raise SystemExit("room: lowercase letters, digits and dashes (e.g. bedroom)")

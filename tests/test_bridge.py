@@ -98,6 +98,22 @@ def test_claude_command_is_read_only_by_default_and_continues_when_asked() -> No
     assert "Bash" not in " ".join(command)
 
 
+def test_agent_command_swaps_in_another_agent_and_never_continues() -> None:
+    cfg = {**bridge.DEFAULT_CONFIG, "agent_command": ["codex", "exec", "{prompt}"]}
+    assert bridge.claude_command(cfg, "hi", resume=True) == ["codex", "exec", "hi"]
+
+
+def test_check_reports_each_requirement(tmp_path: Path) -> None:
+    cfg = {
+        **bridge.DEFAULT_CONFIG,
+        "agent_command": ["no-such-agent-xyz"],
+        "claude_workdir": str(tmp_path),
+    }
+    lines = bridge.check_lines(cfg, 1)
+    assert lines[0] == (False, "agent command `no-such-agent-xyz` is installed")
+    assert lines[3][0] is True and lines[4][0] is False
+
+
 def test_claude_prompt_names_the_room_and_forbids_acting_on_a_spoken_request() -> None:
     prompt = bridge.claude_prompt("bedroom", "turn off the light")
     assert "bedroom" in prompt and "irreversible" in prompt
